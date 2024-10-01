@@ -8,6 +8,7 @@ import { open } from "sqlite";
 import { availableParallelism } from "os";
 import cluster from "cluster";
 import { createAdapter, setupPrimary } from "@socket.io/cluster-adapter";
+import { createClient } from "redis"; // Import Redis client for Pub/Sub
 
 if (cluster.isPrimary) {
   const numCPUs = availableParallelism();
@@ -18,6 +19,11 @@ if (cluster.isPrimary) {
   }
   setupPrimary();
 } else {
+
+  const pubClient = createClient({ url: "redis://localhost:6379" });
+  const subClient = pubClient.duplicate();
+  await Promise.all([pubClient.connect(), subClient.connect()]);
+
   const db = await open({
     filename: "chat.db",
     driver: sqlite3.Database,
@@ -37,7 +43,7 @@ if (cluster.isPrimary) {
     connectionStateRecovery: {},
     ackTimeout: 10000,
     retries: 3,
-    adapter: createAdapter(),
+    adapter: createAdapter(pubClient, subClient), // Use Redis adapter for scaling
   });
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +70,7 @@ if (cluster.isPrimary) {
         if (e.errno === 19 /* SQLITE_CONSTRAINT */) {
           callback();
         } else {
-          // nothing to do, just let the client retry
+          return;  // Let the client retry if something else went wrong
         }
         return;
       }
